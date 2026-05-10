@@ -1,0 +1,55 @@
+/* 変数が効かない場合に備えてフォールバック (, #色) を追加 */
+#yt-custom-tabs {
+  display: flex;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--yt-spec-10-percent-layer, rgba(128, 128, 128, 0.2));
+}
+
+.yt-tab-btn {
+  flex: 1;
+  padding: 12px;
+  background: transparent;
+  border: none;
+  color: var(--yt-spec-text-secondary, #606060);
+  font-size: 1.4rem;
+  font-weight: 500;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.2s;
+}
+
+/* ダークモード時のフォールバック (YouTubeはhtmlタグにdark属性を付与します) */
+html[dark] .yt-tab-btn {
+  color: var(--yt-spec-text-secondary, #aaaaaa);
+}
+
+.yt-tab-btn:hover {
+  background: var(--yt-spec-badge-chip-background, rgba(128, 128, 128, 0.1));
+}
+
+.yt-tab-btn.active {
+  color: var(--yt-spec-text-primary, #0f0f0f);
+  border-bottom: 2px solid var(--yt-spec-text-primary, #0f0f0f);
+}
+
+html[dark] .yt-tab-btn.active {
+  color: var(--yt-spec-text-primary, #f1f1f1);
+  border-bottom: 2px solid var(--yt-spec-text-primary, #f1f1f1);
+}
+
+/* コメント欄のスクロール設定 */
+#comments {
+  margin-top: 0 !important;
+  max-height: 85vh;
+  overflow-y: auto;
+  padding-right: 8px;
+}
+
+/* スクロールバーのデザイン */
+#comments::-webkit-scrollbar {
+  width: 6px;
+}
+#comments::-webkit-scrollbar-thumb {
+  background: var(--yt-spec-icon-inactive, #909090);
+  border-radius: 4px;
+}

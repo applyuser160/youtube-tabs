@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube Side Tabs",
+  "version": "1.0",
+  "description": "YouTubeの右サイドバーで関連動画とコメントをタブ切り替えします。",
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.youtube.com/*"
+      ],
+      "css": [
+        "styles.css"
+      ],
+      "js": [
+        "content.js"
+      ]
+    }
+  ]
+}
