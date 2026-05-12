@@ -18,7 +18,7 @@
   transition: all 0.2s;
 }
 
-/* ダークモード時のフォールバック (YouTubeはhtmlタグにdark属性を付与します) */
+/* ダークモード時のフォールバック */
 html[dark] .yt-tab-btn {
   color: var(--yt-spec-text-secondary, #aaaaaa);
 }
@@ -37,19 +37,21 @@ html[dark] .yt-tab-btn.active {
   border-bottom: 2px solid var(--yt-spec-text-primary, #f1f1f1);
 }
 
-/* コメント欄のスクロール設定 */
-#comments {
+/* ★変更点：コメント欄と関連動画を、サイドバー内で独立してスクロール可能にする */
+#comments, #related {
   margin-top: 0 !important;
-  max-height: 85vh;
+  max-height: 80vh; /* 画面の高さに合わせて調整 */
   overflow-y: auto;
-  padding-right: 8px;
+  padding-right: 8px; /* スクロールバーの余白 */
 }
 
-/* スクロールバーのデザイン */
-#comments::-webkit-scrollbar {
+/* ★変更点：スクロールバーのデザインをスリムに（関連動画にも適用） */
+#comments::-webkit-scrollbar,
+#related::-webkit-scrollbar {
   width: 6px;
 }
-#comments::-webkit-scrollbar-thumb {
+#comments::-webkit-scrollbar-thumb,
+#related::-webkit-scrollbar-thumb {
   background: var(--yt-spec-icon-inactive, #909090);
   border-radius: 4px;
 }
