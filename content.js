@@ -17,60 +17,109 @@ setInterval(() => {
 // ＝＝＝ 以下、各機能の処理 ＝＝＝
 
 function setupTabsUI() {
-  const targetSidebar = document.querySelector('#secondary-inner') || document.querySelector('#secondary');
+  const secondary = document.querySelector('#secondary');
+  const secondaryInner = document.querySelector('#secondary-inner');
+  const sidebar = secondary || secondaryInner;
   const comments = document.querySelector('#comments');
   const related = document.querySelector('#related');
+  if (!sidebar || !related || !comments) return;
 
-  if (!targetSidebar) return;
-
-  let tabHeader = document.getElementById('yt-custom-tabs');
-
-  // タブUIがなければ作成
-  if (!tabHeader) {
-    tabHeader = document.createElement('div');
-    tabHeader.id = 'yt-custom-tabs';
-    tabHeader.innerHTML = `
-      <button id="tab-related" class="yt-tab-btn active">関連動画</button>
-      <button id="tab-comments" class="yt-tab-btn">コメント</button>
+  let tabsPanel = document.getElementById('yt-tabs-panel');
+  if (!tabsPanel) {
+    tabsPanel = document.createElement('section');
+    tabsPanel.id = 'yt-tabs-panel';
+    tabsPanel.innerHTML = `
+      <div id="yt-custom-tabs" role="tablist">
+        <button id="tab-related" class="yt-tab-btn active" type="button" role="tab" aria-selected="true">関連動画</button>
+        <button id="tab-comments" class="yt-tab-btn" type="button" role="tab" aria-selected="false">コメント</button>
+      </div>
     `;
-    targetSidebar.prepend(tabHeader);
+  }
 
-    // クリック時の動作
-    document.getElementById('tab-related').addEventListener('click', () => {
-      document.getElementById('tab-related').classList.add('active');
-      document.getElementById('tab-comments').classList.remove('active');
-      if (related) related.style.display = 'block';
-      if (comments) comments.style.display = 'none';
-    });
+  // Put the tabs beside YouTube's native inner sidebar so both use the same height.
+  if (tabsPanel.parentElement !== sidebar) sidebar.appendChild(tabsPanel);
+  if (related.parentElement !== tabsPanel) tabsPanel.appendChild(related);
+  if (comments.parentElement !== tabsPanel) tabsPanel.appendChild(comments);
 
-    document.getElementById('tab-comments').addEventListener('click', () => {
-      document.getElementById('tab-comments').classList.add('active');
-      document.getElementById('tab-related').classList.remove('active');
-      if (related) related.style.display = 'none';
-      
-      if (comments) {
-        comments.style.display = 'block';
-      } else {
-        window.scrollBy(0, 500);
-        setTimeout(() => window.scrollBy(0, -500), 50);
+  // YouTube changes the live chat wrapper and live attributes between watch
+  // page layouts. Detect the rendered chat itself instead of relying on a
+  // particular ytd-watch-flexy attribute being present.
+  const chatSelector = [
+    'ytd-live-chat-frame',
+    'yt-live-chat-renderer',
+    'yt-live-chat-app',
+    '#chatframe',
+    'iframe#chatframe',
+    'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-live-chat"]'
+  ].join(',');
+  const chatCandidates = Array.from(sidebar.querySelectorAll(chatSelector))
+    .filter(element => !tabsPanel.contains(element));
+  const liveChat = chatCandidates.find(element => {
+    let ancestor = element;
+    while (ancestor && ancestor !== sidebar.parentElement) {
+      const style = window.getComputedStyle(ancestor);
+      if (style.display === 'none' || style.visibility === 'hidden' || style.contentVisibility === 'hidden') {
+        return false;
       }
-    });
+      if (ancestor === sidebar) break;
+      ancestor = ancestor.parentElement;
+    }
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  });
+  const hasLiveChat = Boolean(liveChat);
+  const layoutRoot = secondary || sidebar;
+  const previouslyHadLiveChat = layoutRoot.dataset.ytHadLiveChat === 'true';
+  layoutRoot.classList.toggle('yt-has-live-chat', hasLiveChat);
+
+  sidebar.querySelectorAll('.yt-live-chat-block').forEach(element => {
+    element.classList.remove('yt-live-chat-block');
+  });
+  if (hasLiveChat) {
+    let chatBlock = liveChat;
+    while (
+      chatBlock.parentElement &&
+      chatBlock.parentElement !== sidebar &&
+      chatBlock.parentElement !== secondaryInner
+    ) {
+      chatBlock = chatBlock.parentElement;
+    }
+    if (chatBlock.parentElement === sidebar || chatBlock.parentElement === secondaryInner) {
+      chatBlock.classList.add('yt-live-chat-block');
+    }
   }
 
-  // ★超重要：画面遷移や他拡張機能によるリセットへの対策（自己修復）
-  // コメント要素がサイドバーの外に弾き出されていたら、再度格納する
-  if (comments && !targetSidebar.contains(comments)) {
-    targetSidebar.appendChild(comments);
+  const relatedButton = tabsPanel.querySelector('#tab-related');
+  const commentsButton = tabsPanel.querySelector('#tab-comments');
+  relatedButton.onclick = () => {
+    relatedButton.classList.add('active');
+    commentsButton.classList.remove('active');
+    relatedButton.setAttribute('aria-selected', 'true');
+    commentsButton.setAttribute('aria-selected', 'false');
+    related.style.display = 'block';
+    comments.style.display = 'none';
+  };
+  commentsButton.onclick = () => {
+    commentsButton.classList.add('active');
+    relatedButton.classList.remove('active');
+    commentsButton.setAttribute('aria-selected', 'true');
+    relatedButton.setAttribute('aria-selected', 'false');
+    related.style.display = 'none';
+    comments.style.display = 'block';
+  };
+
+  if (previouslyHadLiveChat && !hasLiveChat) {
+    relatedButton.classList.add('active');
+    commentsButton.classList.remove('active');
+    relatedButton.setAttribute('aria-selected', 'true');
+    commentsButton.setAttribute('aria-selected', 'false');
   }
+  layoutRoot.dataset.ytHadLiveChat = String(hasLiveChat);
 
-  // 現在どちらのタブがアクティブか判定
-  const isRelatedActive = document.getElementById('tab-related').classList.contains('active');
-
-  // 常に現在のタブに合わせて、関連動画とコメントの表示状態を「強制的に」上書きし続ける
-  if (related) related.style.display = isRelatedActive ? 'block' : 'none';
-  if (comments) comments.style.display = isRelatedActive ? 'none' : 'block';
+  const showRelated = relatedButton.classList.contains('active');
+  related.style.display = showRelated ? 'block' : 'none';
+  comments.style.display = showRelated ? 'none' : 'block';
 }
-
 
 function replaceMetricsToExact() {
   // 1. 高評価数の書き換え
@@ -79,8 +128,8 @@ function replaceMetricsToExact() {
     const label = btn.getAttribute('aria-label') || '';
     const exactMatch = label.match(/[\d,]+/);
     if (exactMatch) {
-      const exactLikes = exactMatch[0]; 
-      const textElem = btn.querySelector('.yt-core-attributed-string') || 
+      const exactLikes = exactMatch[0];
+      const textElem = btn.querySelector('.yt-core-attributed-string') ||
                        btn.querySelector('.yt-spec-button-shape-next__button-text-content') ||
                        btn.querySelector('div:not([class])');
       if (textElem && textElem.textContent.match(/[万億]/)) {

@@ -1,6 +1,49 @@
-/* 変数が効かない場合に備えてフォールバック (, #色) を追加 */
+/* Share the complete right column between live chat and the tabs. */
+#secondary {
+  display: flex !important;
+  position: relative !important;
+  flex-direction: column !important;
+  height: 100vh !important;
+  max-height: 100vh !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+#secondary-inner {
+  display: contents !important;
+}
+
+.yt-live-chat-block {
+  display: flex !important;
+  flex: 1 1 50% !important;
+  flex-direction: column !important;
+  order: 1 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+#yt-tabs-panel {
+  display: flex !important;
+  position: absolute !important;
+  inset: 0 !important;
+  z-index: 2;
+  flex: 1 1 auto !important;
+  flex-direction: column !important;
+  order: 1 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+#secondary.yt-has-live-chat #yt-tabs-panel {
+  position: relative !important;
+  inset: auto !important;
+  flex: 1 1 50% !important;
+  order: 2 !important;
+}
+
 #yt-custom-tabs {
   display: flex;
+  flex: 0 0 auto;
   margin-bottom: 16px;
   border-bottom: 1px solid var(--yt-spec-10-percent-layer, rgba(128, 128, 128, 0.2));
 }
@@ -9,18 +52,16 @@
   flex: 1;
   padding: 12px;
   background: transparent;
-  border: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
   color: var(--yt-spec-text-secondary, #606060);
   font-size: 1.4rem;
   font-weight: 500;
   cursor: pointer;
-  border-bottom: 2px solid transparent;
-  transition: all 0.2s;
 }
 
-/* ダークモード時のフォールバック */
 html[dark] .yt-tab-btn {
-  color: var(--yt-spec-text-secondary, #aaaaaa);
+  color: var(--yt-spec-text-secondary, #aaa);
 }
 
 .yt-tab-btn:hover {
@@ -29,29 +70,32 @@ html[dark] .yt-tab-btn {
 
 .yt-tab-btn.active {
   color: var(--yt-spec-text-primary, #0f0f0f);
-  border-bottom: 2px solid var(--yt-spec-text-primary, #0f0f0f);
+  border-bottom-color: var(--yt-spec-text-primary, #0f0f0f);
 }
 
 html[dark] .yt-tab-btn.active {
   color: var(--yt-spec-text-primary, #f1f1f1);
-  border-bottom: 2px solid var(--yt-spec-text-primary, #f1f1f1);
+  border-bottom-color: var(--yt-spec-text-primary, #f1f1f1);
 }
 
-/* ★変更点：コメント欄と関連動画を、サイドバー内で独立してスクロール可能にする */
-#comments, #related {
+#related,
+#comments {
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
   margin-top: 0 !important;
-  max-height: 80vh; /* 画面の高さに合わせて調整 */
   overflow-y: auto;
-  padding-right: 8px; /* スクロールバーの余白 */
+  padding-right: 8px;
 }
 
-/* ★変更点：スクロールバーのデザインをスリムに（関連動画にも適用） */
-#comments::-webkit-scrollbar,
-#related::-webkit-scrollbar {
+#related::-webkit-scrollbar,
+#comments::-webkit-scrollbar {
   width: 6px;
 }
-#comments::-webkit-scrollbar-thumb,
-#related::-webkit-scrollbar-thumb {
+
+#related::-webkit-scrollbar-thumb,
+#comments::-webkit-scrollbar-thumb {
   background: var(--yt-spec-icon-inactive, #909090);
   border-radius: 4px;
 }
