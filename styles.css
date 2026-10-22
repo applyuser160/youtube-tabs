@@ -1,5 +1,9 @@
-/* Share the complete right column between live chat and the tabs. */
-#secondary {
+/* ============================================================================
+ * 1. 右サイドバー全体レイアウト（ライブチャット・プレイリストとタブパネルの分割制御）
+ * ============================================================================ */
+
+ytd-watch-flexy #secondary,
+#secondary.yt-tabs-active {
   display: flex !important;
   position: relative !important;
   flex-direction: column !important;
@@ -9,17 +13,43 @@
   overflow: hidden !important;
 }
 
-#secondary-inner {
+ytd-watch-flexy #secondary-inner,
+#secondary.yt-tabs-active #secondary-inner {
   display: contents !important;
 }
 
-.yt-live-chat-block {
+.yt-live-chat-block:not([hidden]) {
   display: flex !important;
   flex: 1 1 50% !important;
   flex-direction: column !important;
   order: 1 !important;
   min-height: 0 !important;
   overflow: hidden !important;
+}
+
+.yt-playlist-block:not([hidden]) {
+  display: flex !important;
+  flex: 0 1 auto !important;
+  flex-direction: column !important;
+  order: 2 !important;
+  max-height: 50vh !important;
+  min-height: 0 !important;
+  margin-bottom: 12px !important;
+  overflow: hidden !important;
+}
+
+.yt-playlist-block:not([hidden]) #container {
+  display: flex !important;
+  flex: 1 1 auto !important;
+  flex-direction: column !important;
+  max-height: 50vh !important;
+  min-height: 0 !important;
+}
+
+.yt-playlist-block:not([hidden]):not([collapsed]) #items {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  overflow-y: auto !important;
 }
 
 #yt-tabs-panel {
@@ -29,17 +59,42 @@
   z-index: 2;
   flex: 1 1 auto !important;
   flex-direction: column !important;
-  order: 1 !important;
+  order: 3 !important;
   min-height: 0 !important;
   overflow: hidden !important;
+  background: var(--yt-spec-base-background, #fff);
 }
 
-#secondary.yt-has-live-chat #yt-tabs-panel {
+html[dark] #yt-tabs-panel {
+  background: var(--yt-spec-base-background, #0f0f0f);
+}
+
+#secondary.yt-has-live-chat #yt-tabs-panel,
+#secondary.yt-has-playlist #yt-tabs-panel {
   position: relative !important;
   inset: auto !important;
   flex: 1 1 50% !important;
-  order: 2 !important;
+  order: 3 !important;
 }
+
+/* ライブチャットとプレイリストの両方が表示されている場合は高さを3分割する */
+#secondary.yt-has-live-chat.yt-has-playlist .yt-live-chat-block:not([hidden]) {
+  flex: 1 1 35% !important;
+}
+
+#secondary.yt-has-live-chat.yt-has-playlist .yt-playlist-block:not([hidden]),
+#secondary.yt-has-live-chat.yt-has-playlist .yt-playlist-block:not([hidden]) #container {
+  max-height: 30vh !important;
+}
+
+#secondary.yt-has-live-chat.yt-has-playlist #yt-tabs-panel {
+  flex: 1 1 35% !important;
+}
+
+
+/* ============================================================================
+ * 2. タブヘッダー・タブボタン
+ * ============================================================================ */
 
 #yt-custom-tabs {
   display: flex;
@@ -78,8 +133,13 @@ html[dark] .yt-tab-btn.active {
   border-bottom-color: var(--yt-spec-text-primary, #f1f1f1);
 }
 
-#related,
-#comments {
+
+/* ============================================================================
+ * 3. タブコンテンツ領域（関連動画・コメント欄の独立スクロール）
+ * ============================================================================ */
+
+#yt-tabs-panel #related,
+#yt-tabs-panel #comments {
   box-sizing: border-box;
   flex: 1 1 auto;
   width: 100%;
@@ -89,13 +149,13 @@ html[dark] .yt-tab-btn.active {
   padding-right: 8px;
 }
 
-#related::-webkit-scrollbar,
-#comments::-webkit-scrollbar {
+#yt-tabs-panel #related::-webkit-scrollbar,
+#yt-tabs-panel #comments::-webkit-scrollbar {
   width: 6px;
 }
 
-#related::-webkit-scrollbar-thumb,
-#comments::-webkit-scrollbar-thumb {
+#yt-tabs-panel #related::-webkit-scrollbar-thumb,
+#yt-tabs-panel #comments::-webkit-scrollbar-thumb {
   background: var(--yt-spec-icon-inactive, #909090);
   border-radius: 4px;
 }
