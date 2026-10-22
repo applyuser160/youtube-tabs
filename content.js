@@ -179,11 +179,15 @@ function replaceMetricsToExact() {
   let exactDateTime = null;
   const dateMeta = document.querySelector('meta[itemprop="uploadDate"]') || document.querySelector('meta[itemprop="datePublished"]');
   if (dateMeta && dateMeta.content) {
-    const dateObj = new Date(dateMeta.content);
+    const rawDate = dateMeta.content.trim();
+    const dateOnlyMatch = rawDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    const dateObj = new Date(rawDate);
     if (!isNaN(dateObj.getTime())) {
-      const y = dateObj.getFullYear();
-      const m = String(dateObj.getMonth() + 1).padStart(2, '0');
-      const d = String(dateObj.getDate()).padStart(2, '0');
+      // Date-only metadata represents a calendar date. Keep that date as-is
+      // instead of letting UTC parsing shift it in the viewer's timezone.
+      const y = dateOnlyMatch ? dateOnlyMatch[1] : dateObj.getFullYear();
+      const m = dateOnlyMatch ? dateOnlyMatch[2] : String(dateObj.getMonth() + 1).padStart(2, '0');
+      const d = dateOnlyMatch ? dateOnlyMatch[3] : String(dateObj.getDate()).padStart(2, '0');
       const h = String(dateObj.getHours()).padStart(2, '0');
       const min = String(dateObj.getMinutes()).padStart(2, '0');
       exactDateTime = `${y}/${m}/${d} ${h}:${min}`;
