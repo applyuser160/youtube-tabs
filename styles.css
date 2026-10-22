@@ -62,6 +62,7 @@ ytd-watch-flexy #secondary-inner,
   order: 3 !important;
   min-height: 0 !important;
   overflow: hidden !important;
+  contain: layout style;
   background: var(--yt-spec-base-background, #fff);
 }
 
@@ -147,6 +148,7 @@ html[dark] .yt-tab-btn.active {
   margin-top: 0 !important;
   overflow-y: auto;
   padding-right: 8px;
+  contain: layout style;
 }
 
 #yt-tabs-panel #related::-webkit-scrollbar,

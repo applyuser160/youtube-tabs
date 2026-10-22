@@ -6,7 +6,9 @@
 
 const TIMING = {
   SETUP_DEBOUNCE_MS: 100,
-  METRICS_POLL_INTERVAL_MS: 1000,
+  METRICS_DEBOUNCE_MS: 150,
+  METRICS_RETRY_INTERVAL_MS: 500,
+  METRICS_MAX_RETRIES: 15,
 };
 
 const SELECTORS = {
@@ -103,6 +105,7 @@ function setupTabsUI() {
   const comments = document.querySelector(SELECTORS.COMMENTS);
   const related = document.querySelector(SELECTORS.RELATED);
   if (!sidebar || !related || !comments || !related.isConnected || !comments.isConnected) {
+    updateTabsObserverTarget(null);
     return;
   }
 
@@ -153,6 +156,9 @@ function setupTabsUI() {
   if (layoutRoot.dataset.ytHadLiveChat !== nextHadLiveChat) {
     layoutRoot.dataset.ytHadLiveChat = nextHadLiveChat;
   }
+
+  // タブパネルへの格納が完了したら、MutationObserverの監視対象をサイドバーのみに絞り込む
+  updateTabsObserverTarget(sidebar);
 }
 
 function ensureTabsPanel() {
@@ -178,22 +184,35 @@ function findVisibleSidebarElement(sidebar, tabsPanel, selector) {
 }
 
 function isElementVisibleInSidebar(element, sidebar) {
-  let ancestor = element;
-  while (ancestor && ancestor !== sidebar.parentElement) {
-    if (ancestor.hidden || ancestor.hasAttribute('hidden')) {
-      return false;
-    }
-    const style = window.getComputedStyle(ancestor);
-    if (
-      style.display === 'none' ||
-      style.visibility === 'hidden' ||
-      style.contentVisibility === 'hidden'
-    ) {
-      return false;
-    }
-    if (ancestor === sidebar) break;
-    ancestor = ancestor.parentElement;
+  if (element.hidden || element.hasAttribute('hidden')) {
+    return false;
   }
+
+  // Chrome標準のネイティブC++実装 checkVisibility() を優先利用し、
+  // JSループによる getComputedStyle の繰り返し呼び出しを回避する
+  if (typeof element.checkVisibility === 'function') {
+    if (!element.checkVisibility({ checkVisibilityCSS: true, contentVisibilityAuto: true })) {
+      return false;
+    }
+  } else {
+    let ancestor = element;
+    while (ancestor && ancestor !== sidebar.parentElement) {
+      if (ancestor.hidden || ancestor.hasAttribute('hidden')) {
+        return false;
+      }
+      const style = window.getComputedStyle(ancestor);
+      if (
+        style.display === 'none' ||
+        style.visibility === 'hidden' ||
+        style.contentVisibility === 'hidden'
+      ) {
+        return false;
+      }
+      if (ancestor === sidebar) break;
+      ancestor = ancestor.parentElement;
+    }
+  }
+
   const rect = element.getBoundingClientRect();
   return rect.width > 0 && rect.height > 0;
 }
@@ -272,31 +291,40 @@ let cachedRawUploadDate = null;
 let cachedFormattedUploadDate = null;
 
 function replaceMetricsToExact() {
-  updateExactLikes();
+  const metadataRoot = document.querySelector(SELECTORS.WATCH_METADATA);
+  if (metadataRoot) {
+    observeMetadataRoot(metadataRoot);
+  }
 
+  const likesResolved = updateExactLikes(metadataRoot || document);
   const exactDateTime = getExactUploadDateTime();
   const exactViews = getExactViewCount();
-  if (!exactDateTime && !exactViews) return;
+  if (!exactDateTime && !exactViews) {
+    return false;
+  }
 
-  updateDescriptionMetrics(exactViews, exactDateTime);
+  const descriptionResolved = updateDescriptionMetrics(exactViews, exactDateTime);
+  return likesResolved && descriptionResolved;
 }
 
-function updateExactLikes() {
-  // コメント欄の「いいね」ボタン走査を避けるため、動画メタデータ領域を優先スコープとする
-  const metadataRoot = document.querySelector(SELECTORS.WATCH_METADATA) || document;
-  const likeButtons = metadataRoot.querySelectorAll(SELECTORS.LIKE_BUTTONS);
+function updateExactLikes(root) {
+  const likeButtons = root.querySelectorAll(SELECTORS.LIKE_BUTTONS);
+  if (likeButtons.length === 0) return false;
 
+  let hasValidLikes = false;
   likeButtons.forEach(btn => {
     const label = btn.getAttribute('aria-label') || '';
     const exactMatch = label.match(PATTERNS.EXACT_NUMBER);
     if (!exactMatch) return;
 
+    hasValidLikes = true;
     const exactLikes = exactMatch[0];
     const textElem = btn.querySelector(SELECTORS.LIKE_TEXT_CANDIDATES);
     if (textElem && PATTERNS.ABBREVIATED_UNIT.test(textElem.textContent)) {
       setTextContentIfChanged(textElem, exactLikes);
     }
   });
+  return hasValidLikes;
 }
 
 function getExactUploadDateTime() {
@@ -335,27 +363,46 @@ function getExactViewCount() {
 
 function updateDescriptionMetrics(exactViews, exactDateTime) {
   const spans = document.querySelectorAll(SELECTORS.DESCRIPTION_SPANS);
+  if (spans.length === 0) return false;
+
+  let viewsUpdated = !exactViews;
+  let dateUpdated = !exactDateTime;
+
   spans.forEach(span => {
     const text = span.textContent;
-    if (exactViews && text.includes('回視聴') && PATTERNS.ABBREVIATED_UNIT.test(text)) {
-      setTextContentIfChanged(span, exactViews);
+    if (exactViews && text.includes('回視聴')) {
+      if (PATTERNS.ABBREVIATED_UNIT.test(text)) {
+        setTextContentIfChanged(span, exactViews);
+      }
+      viewsUpdated = true;
     }
-    if (
-      exactDateTime &&
-      text !== exactDateTime &&
-      (text.includes('前') || text.includes('昨日') || PATTERNS.DATE_TEXT.test(text))
-    ) {
-      setTextContentIfChanged(span, exactDateTime);
+    if (exactDateTime) {
+      if (text === exactDateTime) {
+        dateUpdated = true;
+      } else if (text.includes('前') || text.includes('昨日') || PATTERNS.DATE_TEXT.test(text)) {
+        setTextContentIfChanged(span, exactDateTime);
+        dateUpdated = true;
+      }
     }
   });
+
+  return viewsUpdated && dateUpdated;
 }
 
 
 // ============================================================================
-// 5. エントリポイント・イベントおよびDOM監視制御
+// 5. エントリポイント・イベントおよびDOM監視制御（動的スコープ＆自動停止）
 // ============================================================================
 
 let tabsSetupTimer = null;
+let currentObservedSidebar = null;
+
+const TABS_OBSERVER_OPTIONS = {
+  childList: true,
+  subtree: true,
+  attributes: true,
+  attributeFilter: ['hidden', 'collapsed'],
+};
 
 function scheduleTabsSetup() {
   if (tabsSetupTimer !== null) window.clearTimeout(tabsSetupTimer);
@@ -370,25 +417,36 @@ function scheduleTabsSetup() {
   }, TIMING.SETUP_DEBOUNCE_MS);
 }
 
-function handleMutation(mutations) {
+function isIgnorableInnerMutation(target, related, comments) {
+  if (!(target instanceof Element)) return false;
+
+  // 1. 関連動画・コメント欄内部のスクロール追加等は無視
+  if (
+    (related && target !== related && related.contains(target)) ||
+    (comments && target !== comments && comments.contains(target))
+  ) {
+    return true;
+  }
+
+  // 2. プレイリストのアイテムリスト(#items)内部やライブチャット内部の要素更新は無視
+  if (target.closest('#items.playlist-items, ytd-live-chat-renderer, yt-live-chat-app')) {
+    return true;
+  }
+
+  return false;
+}
+
+function handleTabsMutation(mutations) {
   if (!isWatchPage()) return;
 
-  // タブの中身（コメント一覧や関連動画リストのスクロール追加など）の細かな変更は無視し、
-  // サイドバー構造やパネル外の更新時のみ再セットアップをスケジュールする
   const tabsPanel = document.getElementById('yt-tabs-panel');
   if (tabsPanel && tabsPanel.isConnected) {
     const related = document.querySelector(SELECTORS.RELATED);
     const comments = document.querySelector(SELECTORS.COMMENTS);
     const hasRelevantChange = mutations.some(mutation => {
       const target = mutation.target;
-      if (!(target instanceof Node)) return true;
-      if (
-        (related && target !== related && related.contains(target)) ||
-        (comments && target !== comments && comments.contains(target))
-      ) {
-        return false;
-      }
-      return true;
+      const elementTarget = target instanceof Element ? target : target.parentElement;
+      return !isIgnorableInnerMutation(elementTarget, related, comments);
     });
     if (!hasRelevantChange) return;
   }
@@ -396,36 +454,92 @@ function handleMutation(mutations) {
   scheduleTabsSetup();
 }
 
-const tabsObserver = new MutationObserver(handleMutation);
-if (document.documentElement) {
-  tabsObserver.observe(document.documentElement, {
-    childList: true,
-    subtree: true,
-    attributes: true,
-    attributeFilter: ['hidden', 'collapsed'],
-  });
+const tabsObserver = new MutationObserver(handleTabsMutation);
+
+function updateTabsObserverTarget(sidebar) {
+  const target = sidebar && sidebar.isConnected ? sidebar : document.documentElement;
+  if (!target || currentObservedSidebar === target) return;
+
+  tabsObserver.disconnect();
+  tabsObserver.observe(target, TABS_OBSERVER_OPTIONS);
+  currentObservedSidebar = target;
 }
 
-window.addEventListener('yt-navigate-finish', () => {
-  scheduleTabsSetup();
-  if (isWatchPage()) {
+// --- メトリクス用のスコープ限定Observerと完了時自動停止タイマー ---
+let metricsTimer = null;
+let metricsRetryTimer = null;
+let currentObservedMetadata = null;
+
+function scheduleMetricsUpdate() {
+  if (metricsTimer !== null) window.clearTimeout(metricsTimer);
+  metricsTimer = window.setTimeout(() => {
+    metricsTimer = null;
+    if (document.hidden || !isWatchPage()) return;
     try {
       replaceMetricsToExact();
     } catch (e) {
       console.error('Metrics Error:', e);
     }
+  }, TIMING.METRICS_DEBOUNCE_MS);
+}
+
+const metadataObserver = new MutationObserver(scheduleMetricsUpdate);
+
+function observeMetadataRoot(metadataRoot) {
+  if (!metadataRoot || currentObservedMetadata === metadataRoot) return;
+  metadataObserver.disconnect();
+  metadataObserver.observe(metadataRoot, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['aria-label', 'content'],
+  });
+  currentObservedMetadata = metadataRoot;
+}
+
+function startMetricsSyncSession() {
+  if (metricsRetryTimer !== null) {
+    window.clearInterval(metricsRetryTimer);
+    metricsRetryTimer = null;
   }
+  if (!isWatchPage()) return;
+
+  let retries = 0;
+  metricsRetryTimer = window.setInterval(() => {
+    if (document.hidden) return;
+    if (!isWatchPage()) {
+      window.clearInterval(metricsRetryTimer);
+      metricsRetryTimer = null;
+      return;
+    }
+
+    retries += 1;
+    try {
+      const allResolved = replaceMetricsToExact();
+      if (allResolved || retries >= TIMING.METRICS_MAX_RETRIES) {
+        window.clearInterval(metricsRetryTimer);
+        metricsRetryTimer = null;
+      }
+    } catch (e) {
+      console.error('Metrics Error:', e);
+    }
+  }, TIMING.METRICS_RETRY_INTERVAL_MS);
+}
+
+function handleNavigation() {
+  // ページ遷移時はサイドバー要素が差し替わる可能性があるため、一旦監視をdocument全体に戻す
+  updateTabsObserverTarget(null);
+  scheduleTabsSetup();
+  scheduleMetricsUpdate();
+  startMetricsSyncSession();
+}
+
+updateTabsObserverTarget(null);
+window.addEventListener('yt-navigate-finish', handleNavigation);
+window.addEventListener('yt-page-data-updated', () => {
+  scheduleTabsSetup();
+  scheduleMetricsUpdate();
+  startMetricsSyncSession();
 });
 
-scheduleTabsSetup();
-
-// YouTube側で遅延反映されるメトリクス値（再生数・高評価数・日時）を定期チェックする
-// 既に置換済みの要素は setTextContentIfChanged によりDOM再書き換えを行わない
-setInterval(() => {
-  if (document.hidden || !isWatchPage()) return;
-  try {
-    replaceMetricsToExact();
-  } catch (e) {
-    console.error('Metrics Error:', e);
-  }
-}, TIMING.METRICS_POLL_INTERVAL_MS);
+handleNavigation();
