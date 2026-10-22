@@ -1,16 +1,33 @@
 // content.js
+let tabsSetupTimer = null;
+
+function scheduleTabsSetup() {
+  if (tabsSetupTimer !== null) window.clearTimeout(tabsSetupTimer);
+  tabsSetupTimer = window.setTimeout(() => {
+    tabsSetupTimer = null;
+    if (!window.location.pathname.startsWith('/watch')) return;
+    try {
+      setupTabsUI();
+    } catch (e) { console.error('Tab UI Error:', e); }
+  }, 100);
+}
+
+// YouTube is a single page app. Watch pages and their sidebar renderers can be
+// replaced after navigation, so initialize when the DOM changes instead of
+// repeatedly moving the same renderers on a timer.
+const tabsObserver = new MutationObserver(scheduleTabsSetup);
+if (document.documentElement) {
+  tabsObserver.observe(document.documentElement, { childList: true, subtree: true });
+}
+window.addEventListener('yt-navigate-finish', scheduleTabsSetup);
+scheduleTabsSetup();
+
+// The metrics helper still needs to revisit values that YouTube fills in late.
 setInterval(() => {
   if (!window.location.pathname.startsWith('/watch')) return;
-
-  // 各機能でエラーが起きても、他の機能が止まらないように保護
-  try {
-    setupTabsUI();
-  } catch (e) { console.error('Tab UI Error:', e); }
-
   try {
     replaceMetricsToExact();
   } catch (e) { console.error('Metrics Error:', e); }
-
 }, 1000);
 
 
@@ -22,7 +39,7 @@ function setupTabsUI() {
   const sidebar = secondary || secondaryInner;
   const comments = document.querySelector('#comments');
   const related = document.querySelector('#related');
-  if (!sidebar || !related || !comments) return;
+  if (!sidebar || !related || !comments || !related.isConnected || !comments.isConnected) return;
 
   let tabsPanel = document.getElementById('yt-tabs-panel');
   if (!tabsPanel) {
@@ -91,22 +108,14 @@ function setupTabsUI() {
 
   const relatedButton = tabsPanel.querySelector('#tab-related');
   const commentsButton = tabsPanel.querySelector('#tab-comments');
-  relatedButton.onclick = () => {
-    relatedButton.classList.add('active');
-    commentsButton.classList.remove('active');
-    relatedButton.setAttribute('aria-selected', 'true');
-    commentsButton.setAttribute('aria-selected', 'false');
-    related.style.display = 'block';
-    comments.style.display = 'none';
-  };
-  commentsButton.onclick = () => {
-    commentsButton.classList.add('active');
-    relatedButton.classList.remove('active');
-    commentsButton.setAttribute('aria-selected', 'true');
-    relatedButton.setAttribute('aria-selected', 'false');
-    related.style.display = 'none';
-    comments.style.display = 'block';
-  };
+  if (relatedButton.dataset.ytTabsBound !== 'true') {
+    relatedButton.addEventListener('click', () => activateSidebarTab('related'));
+    relatedButton.dataset.ytTabsBound = 'true';
+  }
+  if (commentsButton.dataset.ytTabsBound !== 'true') {
+    commentsButton.addEventListener('click', () => activateSidebarTab('comments'));
+    commentsButton.dataset.ytTabsBound = 'true';
+  }
 
   if (previouslyHadLiveChat && !hasLiveChat) {
     relatedButton.classList.add('active');
@@ -117,8 +126,36 @@ function setupTabsUI() {
   layoutRoot.dataset.ytHadLiveChat = String(hasLiveChat);
 
   const showRelated = relatedButton.classList.contains('active');
+  setSidebarTabState(relatedButton, commentsButton, related, comments, showRelated ? 'related' : 'comments');
+}
+
+function setSidebarTabState(relatedButton, commentsButton, related, comments, activeTab) {
+  const showRelated = activeTab === 'related';
+  relatedButton.classList.toggle('active', showRelated);
+  commentsButton.classList.toggle('active', !showRelated);
+  relatedButton.setAttribute('aria-selected', String(showRelated));
+  commentsButton.setAttribute('aria-selected', String(!showRelated));
   related.style.display = showRelated ? 'block' : 'none';
   comments.style.display = showRelated ? 'none' : 'block';
+}
+
+function activateSidebarTab(activeTab) {
+  const tabsPanel = document.getElementById('yt-tabs-panel');
+  const relatedButton = tabsPanel && tabsPanel.querySelector('#tab-related');
+  const commentsButton = tabsPanel && tabsPanel.querySelector('#tab-comments');
+  const related = document.querySelector('#related');
+  const comments = document.querySelector('#comments');
+  if (!relatedButton || !commentsButton || !related || !comments) return;
+
+  setSidebarTabState(relatedButton, commentsButton, related, comments, activeTab);
+
+  // Showing a previously hidden renderer can expose content that YouTube has
+  // deferred until layout/intersection changes. Give it a fresh layout pass.
+  if (activeTab === 'comments') {
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      window.dispatchEvent(new Event('resize'));
+    }));
+  }
 }
 
 function replaceMetricsToExact() {
