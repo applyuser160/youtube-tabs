@@ -8,15 +8,19 @@ const TIMING = {
   SETUP_DEBOUNCE_MS: 100,
   METRICS_DEBOUNCE_MS: 150,
   METRICS_RETRY_INTERVAL_MS: 500,
-  METRICS_MAX_RETRIES: 15,
+  METRICS_MAX_RETRIES: 25,
 };
 
 const SELECTORS = {
+  WATCH_FLEXY: 'ytd-watch-flexy',
   SECONDARY: '#secondary',
   SECONDARY_INNER: '#secondary-inner',
+  BELOW: '#below',
+  PRIMARY_INNER: '#primary-inner',
   RELATED: '#related',
   COMMENTS: '#comments',
-  TABS_PANEL: '#yt-tabs-panel',
+  CUSTOM_TABS: '#yt-custom-tabs',
+  LEGACY_TABS_PANEL: '#yt-tabs-panel',
   TAB_RELATED_BTN: '#tab-related',
   TAB_COMMENTS_BTN: '#tab-comments',
   LIVE_CHAT_BLOCK_CLASS: 'yt-live-chat-block',
@@ -25,7 +29,7 @@ const SELECTORS = {
   HAS_PLAYLIST_CLASS: 'yt-has-playlist',
   TABS_ACTIVE_CLASS: 'yt-tabs-active',
   LIVE_CHAT_CANDIDATES: [
-    'ytd-live-chat-frame',
+    'ytd-live-chat-frame:not([collapsed])',
     'yt-live-chat-renderer',
     'yt-live-chat-app',
     '#chatframe',
@@ -38,18 +42,38 @@ const SELECTORS = {
   ].join(','),
   WATCH_METADATA: 'ytd-watch-metadata',
   LIKE_BUTTONS: [
+    'like-button-view-model button',
+    'segmented-like-dislike-button-view-model button[aria-label*="評価"]:not([aria-label*="低く評価"])',
     'button[aria-label*="いいね"]',
     'button[aria-label*="高評価"]',
     'button[aria-label*="高く評価"]',
   ].join(', '),
   LIKE_TEXT_CANDIDATES: [
-    '.yt-core-attributed-string',
+    '.ytSpecButtonShapeNextButtonTextContent',
     '.yt-spec-button-shape-next__button-text-content',
+    '.ytAttributedStringHost',
+    '.yt-core-attributed-string',
     'div:not([class])',
   ].join(', '),
   UPLOAD_DATE_META: 'meta[itemprop="uploadDate"], meta[itemprop="datePublished"]',
+  MICROFORMAT_SCRIPT: 'script[type="application/ld+json"]',
   DESCRIPTION_TOOLTIP: 'ytd-watch-metadata #description tp-yt-paper-tooltip',
-  DESCRIPTION_SPANS: 'ytd-watch-metadata #description-inner span',
+  VIEW_COUNT_CONTAINER: 'ytd-watch-metadata ytd-watch-info-text #view-count',
+  DATE_TEXT_CONTAINER: 'ytd-watch-metadata ytd-watch-info-text #date-text',
+  DESCRIPTION_INFO_SPANS: [
+    'ytd-watch-metadata #info span',
+    'ytd-watch-metadata ytd-watch-info-text > #info span',
+  ].join(', '),
+  DESCRIPTION_BODY_EXCLUDE: [
+    'ytd-text-inline-expander',
+    '#description-inline-expander',
+    '#snippet',
+    '#expanded',
+    '#attributed-snippet-text',
+    '#attributed-description-text',
+    'ytd-structured-description-content-renderer',
+    'tp-yt-paper-tooltip',
+  ].join(', '),
 };
 
 const PATTERNS = {
@@ -57,7 +81,8 @@ const PATTERNS = {
   ABBREVIATED_UNIT: /[万億]/,
   DATE_ONLY: /^(\d{4})-(\d{2})-(\d{2})$/,
   EXACT_VIEWS: /[\d,]+\s*回視聴/,
-  DATE_TEXT: /\d{4}(年|\/)\d{1,2}(月|\/)\d{1,2}/,
+  RELATIVE_DATE_TEXT: /(?:\d+\s*(?:秒|分|時間|日|週間|か月|ヶ月|年)前|^昨日$)/,
+  DATE_TEXT: /\d{4}(?:年|\/)\d{1,2}(?:月|\/)\d{1,2}/,
 };
 
 
@@ -69,9 +94,19 @@ function isWatchPage() {
   return window.location.pathname.startsWith('/watch');
 }
 
+function getWatchFlexy() {
+  return document.querySelector(SELECTORS.WATCH_FLEXY);
+}
+
 function setAttributeIfChanged(element, attr, value) {
   if (element.getAttribute(attr) !== value) {
     element.setAttribute(attr, value);
+  }
+}
+
+function removeAttributeIfPresent(element, attr) {
+  if (element.hasAttribute(attr)) {
+    element.removeAttribute(attr);
   }
 }
 
@@ -98,142 +133,254 @@ function toggleClassIfChanged(element, className, shouldHave) {
 // 3. サイドバータブ UI 機能
 // ============================================================================
 
+let isNavigating = false;
+let navigationSafetyTimer = null;
+
+/**
+ * YouTube本体（ytd-watch-flexy）はページ遷移時や1カラム/2カラム切り替え時に
+ * `#below` 直下の `#comments` や `#secondary-inner` 直下の `#related` を基準に
+ * `insertBefore` 等のDOM操作およびデータバインディングを実行する。
+ *
+ * そのため：
+ * 1. `#related` は本来の親（`#secondary-inner`）から絶対に移動させない。
+ * 2. `#comments` は「コメント」タブ表示中のみサイドバーへ移動し、
+ *    「関連動画」タブ表示中・ページ遷移開始時・1カラム時は本来の `#below` に戻す。
+ * これにより YouTube 側の初期化クラッシュ（関連動画や概要欄が空になる問題）を根本から防止する。
+ */
+function restoreCommentsToBelow(watchFlexy) {
+  const root = watchFlexy || getWatchFlexy() || document;
+  const comments = root.querySelector(SELECTORS.COMMENTS);
+  if (!comments) return;
+
+  const below = root.querySelector(SELECTORS.BELOW) || root.querySelector(SELECTORS.PRIMARY_INNER);
+  if (below && comments.parentElement !== below) {
+    below.appendChild(comments);
+  }
+}
+
+function cleanupLegacyTabsPanel(sidebar, below) {
+  const legacyPanel = document.querySelector(SELECTORS.LEGACY_TABS_PANEL);
+  if (!legacyPanel) return;
+
+  const relatedInPanel = legacyPanel.querySelector(SELECTORS.RELATED);
+  if (relatedInPanel && sidebar) {
+    sidebar.appendChild(relatedInPanel);
+  }
+  const commentsInPanel = legacyPanel.querySelector(SELECTORS.COMMENTS);
+  if (commentsInPanel && below) {
+    below.appendChild(commentsInPanel);
+  }
+  legacyPanel.remove();
+}
+
+function teardownTabsUI(watchFlexy) {
+  restoreCommentsToBelow(watchFlexy);
+
+  const root = watchFlexy || document;
+  const secondary = root.querySelector(SELECTORS.SECONDARY);
+  const related = secondary && secondary.querySelector(SELECTORS.RELATED);
+  const comments = root.querySelector(SELECTORS.COMMENTS);
+  const tabHeader = document.querySelector(SELECTORS.CUSTOM_TABS);
+
+  if (tabHeader) {
+    setStyleDisplayIfChanged(tabHeader, 'none');
+  }
+  if (related) {
+    setStyleDisplayIfChanged(related, '');
+  }
+  if (comments) {
+    setStyleDisplayIfChanged(comments, '');
+  }
+  if (secondary) {
+    toggleClassIfChanged(secondary, SELECTORS.TABS_ACTIVE_CLASS, false);
+    toggleClassIfChanged(secondary, SELECTORS.HAS_LIVE_CHAT_CLASS, false);
+    toggleClassIfChanged(secondary, SELECTORS.HAS_PLAYLIST_CLASS, false);
+  }
+}
+
 function setupTabsUI() {
-  const secondary = document.querySelector(SELECTORS.SECONDARY);
-  const secondaryInner = document.querySelector(SELECTORS.SECONDARY_INNER);
-  const sidebar = secondary || secondaryInner;
-  const comments = document.querySelector(SELECTORS.COMMENTS);
-  const related = document.querySelector(SELECTORS.RELATED);
-  if (!sidebar || !related || !comments || !related.isConnected || !comments.isConnected) {
+  if (isNavigating) return;
+
+  const watchFlexy = getWatchFlexy();
+  if (!watchFlexy) {
     updateTabsObserverTarget(null);
     return;
   }
 
-  const tabsPanel = ensureTabsPanel();
+  updateTabsObserverTarget(watchFlexy);
 
-  // Forced Synchronous Layout（強制同期リフロー）を防ぐため、
-  // DOMへの書き込み（appendChild等）を行う前にライブチャットやプレイリストの可視判定（DOM読み取り）を実施する
-  const liveChat = findVisibleSidebarElement(sidebar, tabsPanel, SELECTORS.LIVE_CHAT_CANDIDATES);
+  // 2カラムレイアウト確定前（初期ロードの1カラム段階やウィンドウ縮小状態）は
+  // YouTube側のDOM配置処理と競合しないようタブ化を行わずネイティブ構造を維持する
+  if (!watchFlexy.hasAttribute('is-two-columns_')) {
+    teardownTabsUI(watchFlexy);
+    return;
+  }
+
+  const secondary = watchFlexy.querySelector(SELECTORS.SECONDARY);
+  const secondaryInner = watchFlexy.querySelector(SELECTORS.SECONDARY_INNER);
+  const sidebar = secondaryInner || secondary;
+  const below = watchFlexy.querySelector(SELECTORS.BELOW) || watchFlexy.querySelector(SELECTORS.PRIMARY_INNER);
+
+  if (!sidebar || !secondary) {
+    return;
+  }
+
+  cleanupLegacyTabsPanel(sidebar, below);
+
+  // `#primary-inner` 内の空の `#related` を誤取得しないよう、必ずサイドバー内から `#related` を取得する
+  const related = sidebar.querySelector(SELECTORS.RELATED);
+  const comments = watchFlexy.querySelector(SELECTORS.COMMENTS);
+  if (!related || !comments || !related.isConnected || !comments.isConnected) {
+    return;
+  }
+
+  const tabHeader = ensureTabHeader();
+
+  // DOM書き込みの前に、ライブチャット・プレイリストの可視状態を計測する
+  const liveChat = findVisibleLiveChat(secondary, tabHeader, related, comments);
   const hasLiveChat = Boolean(liveChat);
-  const chatBlock = hasLiveChat ? resolveSidebarTopBlock(liveChat, sidebar, secondaryInner) : null;
+  const chatBlock = hasLiveChat ? resolveSidebarTopBlock(liveChat, secondary, secondaryInner) : null;
 
-  const playlist = findVisibleSidebarElement(sidebar, tabsPanel, SELECTORS.PLAYLIST_CANDIDATES);
+  const playlist = findVisiblePlaylist(secondary, tabHeader, related, comments);
   const hasPlaylist = Boolean(playlist);
-  const playlistBlock = hasPlaylist ? resolveSidebarTopBlock(playlist, sidebar, secondaryInner) : null;
+  const playlistBlock = hasPlaylist ? resolveSidebarTopBlock(playlist, secondary, secondaryInner) : null;
 
   // --- 以下、DOM書き込み処理 ---
-  const layoutRoot = secondary || sidebar;
-  toggleClassIfChanged(layoutRoot, SELECTORS.TABS_ACTIVE_CLASS, true);
+  toggleClassIfChanged(secondary, SELECTORS.TABS_ACTIVE_CLASS, true);
+  setStyleDisplayIfChanged(tabHeader, '');
 
-  if (tabsPanel.parentElement !== sidebar) {
-    sidebar.appendChild(tabsPanel);
-  }
-  if (related.parentElement !== tabsPanel) {
-    tabsPanel.appendChild(related);
-  }
-  if (comments.parentElement !== tabsPanel) {
-    tabsPanel.appendChild(comments);
+  // タブバーを `#related` の直前に配置（`#related` 自体は親から移動させない）
+  if (tabHeader.parentElement !== sidebar || tabHeader.nextElementSibling !== related) {
+    sidebar.insertBefore(tabHeader, related);
   }
 
-  const previouslyHadLiveChat = layoutRoot.dataset.ytHadLiveChat === 'true';
-  toggleClassIfChanged(layoutRoot, SELECTORS.HAS_LIVE_CHAT_CLASS, hasLiveChat);
-  toggleClassIfChanged(layoutRoot, SELECTORS.HAS_PLAYLIST_CLASS, hasPlaylist);
-  syncSidebarBlockClass(sidebar, SELECTORS.LIVE_CHAT_BLOCK_CLASS, chatBlock);
-  syncSidebarBlockClass(sidebar, SELECTORS.PLAYLIST_BLOCK_CLASS, playlistBlock);
+  const previouslyHadLiveChat = secondary.dataset.ytHadLiveChat === 'true';
+  toggleClassIfChanged(secondary, SELECTORS.HAS_LIVE_CHAT_CLASS, hasLiveChat);
+  toggleClassIfChanged(secondary, SELECTORS.HAS_PLAYLIST_CLASS, hasPlaylist);
+  syncSidebarBlockClass(secondary, SELECTORS.LIVE_CHAT_BLOCK_CLASS, chatBlock);
+  syncSidebarBlockClass(secondary, SELECTORS.PLAYLIST_BLOCK_CLASS, playlistBlock);
 
-  const relatedButton = tabsPanel.querySelector(SELECTORS.TAB_RELATED_BTN);
-  const commentsButton = tabsPanel.querySelector(SELECTORS.TAB_COMMENTS_BTN);
+  const relatedButton = tabHeader.querySelector(SELECTORS.TAB_RELATED_BTN);
+  const commentsButton = tabHeader.querySelector(SELECTORS.TAB_COMMENTS_BTN);
   bindTabButtons(relatedButton, commentsButton);
 
+  let activeTab = relatedButton.classList.contains('active') ? 'related' : 'comments';
   if (previouslyHadLiveChat && !hasLiveChat) {
-    setSidebarTabState(relatedButton, commentsButton, related, comments, 'related');
-  } else {
-    const activeTab = relatedButton.classList.contains('active') ? 'related' : 'comments';
-    setSidebarTabState(relatedButton, commentsButton, related, comments, activeTab);
+    activeTab = 'related';
   }
+
+  setSidebarTabState(relatedButton, commentsButton, related, comments, sidebar, below, activeTab);
 
   const nextHadLiveChat = String(hasLiveChat);
-  if (layoutRoot.dataset.ytHadLiveChat !== nextHadLiveChat) {
-    layoutRoot.dataset.ytHadLiveChat = nextHadLiveChat;
+  if (secondary.dataset.ytHadLiveChat !== nextHadLiveChat) {
+    secondary.dataset.ytHadLiveChat = nextHadLiveChat;
   }
-
-  // タブパネルへの格納が完了したら、MutationObserverの監視対象をサイドバーのみに絞り込む
-  updateTabsObserverTarget(sidebar);
 }
 
-function ensureTabsPanel() {
-  let tabsPanel = document.getElementById('yt-tabs-panel');
-  if (!tabsPanel) {
-    tabsPanel = document.createElement('section');
-    tabsPanel.id = 'yt-tabs-panel';
-    tabsPanel.innerHTML = `
-      <div id="yt-custom-tabs" role="tablist">
-        <button id="tab-related" class="yt-tab-btn active" type="button" role="tab" aria-selected="true">関連動画</button>
-        <button id="tab-comments" class="yt-tab-btn" type="button" role="tab" aria-selected="false">コメント</button>
-      </div>
-    `;
+function ensureTabHeader() {
+  let tabHeader = document.getElementById('yt-custom-tabs');
+  if (!tabHeader) {
+    tabHeader = document.createElement('div');
+    tabHeader.id = 'yt-custom-tabs';
+    tabHeader.setAttribute('role', 'tablist');
+
+    const relatedBtn = document.createElement('button');
+    relatedBtn.id = 'tab-related';
+    relatedBtn.className = 'yt-tab-btn active';
+    relatedBtn.type = 'button';
+    relatedBtn.setAttribute('role', 'tab');
+    relatedBtn.setAttribute('aria-selected', 'true');
+    relatedBtn.textContent = '関連動画';
+
+    const commentsBtn = document.createElement('button');
+    commentsBtn.id = 'tab-comments';
+    commentsBtn.className = 'yt-tab-btn';
+    commentsBtn.type = 'button';
+    commentsBtn.setAttribute('role', 'tab');
+    commentsBtn.setAttribute('aria-selected', 'false');
+    commentsBtn.textContent = 'コメント';
+
+    tabHeader.appendChild(relatedBtn);
+    tabHeader.appendChild(commentsBtn);
   }
-  return tabsPanel;
+  return tabHeader;
 }
 
-function findVisibleSidebarElement(sidebar, tabsPanel, selector) {
-  const candidates = Array.from(sidebar.querySelectorAll(selector))
-    .filter(element => !tabsPanel || !tabsPanel.contains(element));
-
-  return candidates.find(element => isElementVisibleInSidebar(element, sidebar)) || null;
+function isExcludedFromTopBlocks(element, tabHeader, related, comments) {
+  return (
+    (tabHeader && (element === tabHeader || tabHeader.contains(element))) ||
+    (related && (element === related || related.contains(element))) ||
+    (comments && (element === comments || comments.contains(element)))
+  );
 }
 
-function isElementVisibleInSidebar(element, sidebar) {
+function findVisibleLiveChat(secondary, tabHeader, related, comments) {
+  const candidates = Array.from(secondary.querySelectorAll(SELECTORS.LIVE_CHAT_CANDIDATES))
+    .filter(el => !isExcludedFromTopBlocks(el, tabHeader, related, comments));
+
+  return candidates.find(el => {
+    if (el.closest('[collapsed], [hidden]')) return false;
+    return isElementVisibleInSidebar(el, secondary, 60);
+  }) || null;
+}
+
+function findVisiblePlaylist(secondary, tabHeader, related, comments) {
+  const candidates = Array.from(secondary.querySelectorAll(SELECTORS.PLAYLIST_CANDIDATES))
+    .filter(el => !isExcludedFromTopBlocks(el, tabHeader, related, comments));
+
+  return candidates.find(el => {
+    if (el.closest('[hidden]')) return false;
+    const container = el.querySelector('#container');
+    if (container && (container.hidden || container.hasAttribute('hidden'))) {
+      return false;
+    }
+    return isElementVisibleInSidebar(el, secondary, 40);
+  }) || null;
+}
+
+function isElementVisibleInSidebar(element, sidebarRoot, minHeight = 1) {
   if (element.hidden || element.hasAttribute('hidden')) {
     return false;
   }
 
-  // Chrome標準のネイティブC++実装 checkVisibility() を優先利用し、
-  // JSループによる getComputedStyle の繰り返し呼び出しを回避する
-  if (typeof element.checkVisibility === 'function') {
-    if (!element.checkVisibility({ checkVisibilityCSS: true, contentVisibilityAuto: true })) {
+  let ancestor = element;
+  while (ancestor && ancestor !== sidebarRoot.parentElement) {
+    if (ancestor.hidden || ancestor.hasAttribute('hidden')) {
       return false;
     }
-  } else {
-    let ancestor = element;
-    while (ancestor && ancestor !== sidebar.parentElement) {
-      if (ancestor.hidden || ancestor.hasAttribute('hidden')) {
-        return false;
-      }
-      const style = window.getComputedStyle(ancestor);
-      if (
-        style.display === 'none' ||
-        style.visibility === 'hidden' ||
-        style.contentVisibility === 'hidden'
-      ) {
-        return false;
-      }
-      if (ancestor === sidebar) break;
-      ancestor = ancestor.parentElement;
+    const style = window.getComputedStyle(ancestor);
+    if (
+      style.display === 'none' ||
+      style.visibility === 'hidden' ||
+      style.contentVisibility === 'hidden'
+    ) {
+      return false;
     }
+    if (ancestor === sidebarRoot) break;
+    ancestor = ancestor.parentElement;
   }
 
   const rect = element.getBoundingClientRect();
-  return rect.width > 0 && rect.height > 0;
+  return rect.width > 0 && rect.height >= minHeight;
 }
 
-function resolveSidebarTopBlock(element, sidebar, secondaryInner) {
+function resolveSidebarTopBlock(element, secondary, secondaryInner) {
   let block = element;
   while (
     block.parentElement &&
-    block.parentElement !== sidebar &&
+    block.parentElement !== secondary &&
     block.parentElement !== secondaryInner
   ) {
     block = block.parentElement;
   }
-  if (block.parentElement === sidebar || block.parentElement === secondaryInner) {
+  if (block.parentElement === secondary || block.parentElement === secondaryInner) {
     return block;
   }
   return null;
 }
 
-function syncSidebarBlockClass(sidebar, className, activeBlock) {
-  sidebar.querySelectorAll(`.${className}`).forEach(element => {
+function syncSidebarBlockClass(secondary, className, activeBlock) {
+  secondary.querySelectorAll(`.${className}`).forEach(element => {
     if (element !== activeBlock) {
       element.classList.remove(className);
     }
@@ -254,32 +401,56 @@ function bindTabButtons(relatedButton, commentsButton) {
   }
 }
 
-function setSidebarTabState(relatedButton, commentsButton, related, comments, activeTab) {
+function setSidebarTabState(relatedButton, commentsButton, related, comments, sidebar, below, activeTab) {
   const showRelated = activeTab === 'related';
   toggleClassIfChanged(relatedButton, 'active', showRelated);
   toggleClassIfChanged(commentsButton, 'active', !showRelated);
   setAttributeIfChanged(relatedButton, 'aria-selected', String(showRelated));
   setAttributeIfChanged(commentsButton, 'aria-selected', String(!showRelated));
-  setStyleDisplayIfChanged(related, showRelated ? 'block' : 'none');
-  setStyleDisplayIfChanged(comments, showRelated ? 'none' : 'block');
+
+  if (showRelated) {
+    // 関連動画タブ表示中は `#comments` を本来の `#below` に戻し、YouTube標準のDOM構造を保つ
+    if (below && comments.parentElement !== below) {
+      below.appendChild(comments);
+    }
+    removeAttributeIfPresent(related, 'hidden');
+    setStyleDisplayIfChanged(related, 'block');
+    setStyleDisplayIfChanged(comments, 'none');
+  } else {
+    // ページ遷移中でなければ `#comments` をサイドバーの `#related` 直後へ配置して表示する
+    if (!isNavigating && sidebar && comments.parentElement !== sidebar) {
+      related.after(comments);
+    }
+    removeAttributeIfPresent(comments, 'hidden');
+    setStyleDisplayIfChanged(related, 'none');
+    setStyleDisplayIfChanged(comments, 'block');
+  }
 }
 
 function activateSidebarTab(activeTab) {
-  const tabsPanel = document.getElementById('yt-tabs-panel');
-  const relatedButton = tabsPanel && tabsPanel.querySelector(SELECTORS.TAB_RELATED_BTN);
-  const commentsButton = tabsPanel && tabsPanel.querySelector(SELECTORS.TAB_COMMENTS_BTN);
-  const related = document.querySelector(SELECTORS.RELATED);
-  const comments = document.querySelector(SELECTORS.COMMENTS);
+  const watchFlexy = getWatchFlexy();
+  if (!watchFlexy) return;
+
+  const secondary = watchFlexy.querySelector(SELECTORS.SECONDARY);
+  const secondaryInner = watchFlexy.querySelector(SELECTORS.SECONDARY_INNER);
+  const sidebar = secondaryInner || secondary;
+  const below = watchFlexy.querySelector(SELECTORS.BELOW) || watchFlexy.querySelector(SELECTORS.PRIMARY_INNER);
+  const tabHeader = document.getElementById('yt-custom-tabs');
+  if (!sidebar || !tabHeader) return;
+
+  const relatedButton = tabHeader.querySelector(SELECTORS.TAB_RELATED_BTN);
+  const commentsButton = tabHeader.querySelector(SELECTORS.TAB_COMMENTS_BTN);
+  const related = sidebar.querySelector(SELECTORS.RELATED);
+  const comments = watchFlexy.querySelector(SELECTORS.COMMENTS);
   if (!relatedButton || !commentsButton || !related || !comments) return;
 
-  setSidebarTabState(relatedButton, commentsButton, related, comments, activeTab);
+  setSidebarTabState(relatedButton, commentsButton, related, comments, sidebar, below, activeTab);
 
-  // 非表示だったコメント欄を表示した際、YouTube側の遅延読み込み（Intersection/Layout）を促す
-  if (activeTab === 'comments') {
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      window.dispatchEvent(new Event('resize'));
-    }));
-  }
+  // タブ切り替え時にYouTube側の遅延読み込み（IntersectionObserver / Layout）を促す
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    window.dispatchEvent(new Event('resize'));
+    window.dispatchEvent(new Event('scroll'));
+  }));
 }
 
 
@@ -290,54 +461,92 @@ function activateSidebarTab(activeTab) {
 let cachedRawUploadDate = null;
 let cachedFormattedUploadDate = null;
 
+let lastProcessedVideoId = null;
+
 function replaceMetricsToExact() {
-  const metadataRoot = document.querySelector(SELECTORS.WATCH_METADATA);
+  const watchFlexy = getWatchFlexy();
+  const metadataRoot = (watchFlexy || document).querySelector(SELECTORS.WATCH_METADATA);
   if (metadataRoot) {
     observeMetadataRoot(metadataRoot);
   }
 
-  const likesResolved = updateExactLikes(metadataRoot || document);
-  const exactDateTime = getExactUploadDateTime();
+  const videoId = getCurrentVideoId(watchFlexy);
+  const videoChanged = Boolean(videoId && videoId !== lastProcessedVideoId);
+
+  const likesResolved = updateExactLikes(document, videoId);
+  const exactDateTime = getExactUploadDateTime(watchFlexy, videoId);
   const exactViews = getExactViewCount();
   if (!exactDateTime && !exactViews) {
     return false;
   }
 
   const descriptionResolved = updateDescriptionMetrics(exactViews, exactDateTime);
-  return likesResolved && descriptionResolved;
+  if (likesResolved && descriptionResolved && videoId) {
+    lastProcessedVideoId = videoId;
+  }
+  return !videoChanged && likesResolved && descriptionResolved;
 }
 
-function updateExactLikes(root) {
+function updateExactLikes(root, videoId) {
   const likeButtons = root.querySelectorAll(SELECTORS.LIKE_BUTTONS);
   if (likeButtons.length === 0) return false;
 
-  let hasValidLikes = false;
+  let hasUpdatedAny = false;
   likeButtons.forEach(btn => {
     const label = btn.getAttribute('aria-label') || '';
+    if (label.includes('低く評価')) return;
+
     const exactMatch = label.match(PATTERNS.EXACT_NUMBER);
     if (!exactMatch) return;
 
-    hasValidLikes = true;
     const exactLikes = exactMatch[0];
+    // SPA遷移直後、前の動画のaria-labelがまだ残っている場合は完了とみなさない
+    if (
+      videoId &&
+      btn.dataset.ytLikesVideoId &&
+      btn.dataset.ytLikesVideoId !== videoId &&
+      btn.dataset.ytLikesValue === exactLikes
+    ) {
+      return;
+    }
+
     const textElem = btn.querySelector(SELECTORS.LIKE_TEXT_CANDIDATES);
-    if (textElem && PATTERNS.ABBREVIATED_UNIT.test(textElem.textContent)) {
+    if (!textElem || textElem.children.length > 0) return;
+
+    const currentText = textElem.textContent.trim();
+    if (!currentText) return;
+
+    if (PATTERNS.ABBREVIATED_UNIT.test(currentText) || currentText !== exactLikes) {
       setTextContentIfChanged(textElem, exactLikes);
     }
+    if (videoId) {
+      btn.dataset.ytLikesVideoId = videoId;
+      btn.dataset.ytLikesValue = exactLikes;
+    }
+    hasUpdatedAny = true;
   });
-  return hasValidLikes;
+  return hasUpdatedAny;
 }
 
-function getExactUploadDateTime() {
-  const dateMeta = document.querySelector(SELECTORS.UPLOAD_DATE_META);
-  if (!dateMeta || !dateMeta.content) return null;
+function getCurrentVideoId(watchFlexy) {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const idFromUrl = params.get('v');
+    if (idFromUrl) return idFromUrl;
+  } catch {}
+  return watchFlexy ? watchFlexy.getAttribute('video-id') : null;
+}
 
-  const rawDate = dateMeta.content.trim();
-  if (rawDate === cachedRawUploadDate) {
+function formatIsoDateTime(rawDate) {
+  if (!rawDate) return null;
+  const trimmed = rawDate.trim();
+  if (!trimmed) return null;
+  if (trimmed === cachedRawUploadDate) {
     return cachedFormattedUploadDate;
   }
 
-  const dateOnlyMatch = rawDate.match(PATTERNS.DATE_ONLY);
-  const dateObj = new Date(rawDate);
+  const dateOnlyMatch = trimmed.match(PATTERNS.DATE_ONLY);
+  const dateObj = new Date(trimmed);
   if (isNaN(dateObj.getTime())) return null;
 
   // YYYY-MM-DD のみのメタデータはタイムゾーン変換による日付ずれを防ぐためそのまま保持する
@@ -347,9 +556,56 @@ function getExactUploadDateTime() {
   const h = String(dateObj.getHours()).padStart(2, '0');
   const min = String(dateObj.getMinutes()).padStart(2, '0');
 
-  cachedRawUploadDate = rawDate;
+  cachedRawUploadDate = trimmed;
   cachedFormattedUploadDate = `${y}/${m}/${d} ${h}:${min}`;
   return cachedFormattedUploadDate;
+}
+
+function extractUploadDateFromLdJson(videoId) {
+  const scripts = document.querySelectorAll(SELECTORS.MICROFORMAT_SCRIPT);
+  for (const script of scripts) {
+    const text = script.textContent;
+    if (!text || !text.includes('uploadDate')) continue;
+    if (videoId && !text.includes(videoId)) continue;
+    try {
+      const data = JSON.parse(text);
+      if (data && typeof data.uploadDate === 'string') {
+        return data.uploadDate;
+      }
+    } catch {}
+  }
+  return null;
+}
+
+function getExactUploadDateTime(watchFlexy, videoId = getCurrentVideoId(watchFlexy)) {
+  // 1. 現在再生中の動画IDと一致する JSON-LD (VideoObject) から正確なISO日時を取得
+  const ldDate = extractUploadDateFromLdJson(videoId);
+  if (ldDate) {
+    return formatIsoDateTime(ldDate);
+  }
+
+  // 2. SPA遷移前は meta[itemprop="uploadDate"] が利用可能（ただし別動画の古いmetaは除外）
+  const idMeta = document.querySelector('meta[itemprop="identifier"], meta[itemprop="videoId"]');
+  const metaMatchesVideo = !videoId || !idMeta || !idMeta.content || idMeta.content === videoId;
+  if (metaMatchesVideo) {
+    const dateMeta =
+      (watchFlexy && watchFlexy.querySelector(SELECTORS.UPLOAD_DATE_META)) ||
+      document.querySelector(SELECTORS.UPLOAD_DATE_META);
+    if (dateMeta && dateMeta.content) {
+      return formatIsoDateTime(dateMeta.content);
+    }
+  }
+
+  // 3. フォールバック：概要欄ツールチップ内の公開日テキスト（YYYY/MM/DD）を取得
+  const tooltipElem = document.querySelector(SELECTORS.DESCRIPTION_TOOLTIP);
+  if (tooltipElem) {
+    const dateMatch = tooltipElem.textContent.match(PATTERNS.DATE_TEXT);
+    if (dateMatch) {
+      return dateMatch[0];
+    }
+  }
+
+  return null;
 }
 
 function getExactViewCount() {
@@ -361,25 +617,87 @@ function getExactViewCount() {
   return viewMatch ? viewMatch[0] : null;
 }
 
-function updateDescriptionMetrics(exactViews, exactDateTime) {
-  const spans = document.querySelectorAll(SELECTORS.DESCRIPTION_SPANS);
-  if (spans.length === 0) return false;
+function updateRollingNumberContainer(containerSelector, exactText) {
+  if (!exactText) return false;
+  const container = document.querySelector(containerSelector);
+  if (!container) return false;
 
+  const rollingNumber = container.querySelector('yt-animated-rolling-number');
+  const formattedStrings = container.querySelectorAll('yt-formatted-string');
+
+  // YouTube本体がアクティブに描画している（digitsが存在する）場合のみ更新し、
+  // SPA遷移後に #info 側へ描画が切り替わった場合はこのコンテナを非表示に戻す
+  const digits = rollingNumber && rollingNumber.querySelector('.animatedRollingNumberDigits');
+  const isRollingActive = Boolean(digits && digits.children.length > 0);
+  if (!isRollingActive) {
+    if (formattedStrings.length > 0 && formattedStrings[0].dataset.ytExactInjected === 'true') {
+      formattedStrings[0].textContent = '';
+      formattedStrings[0].setAttribute('is-empty', '');
+      delete formattedStrings[0].dataset.ytExactInjected;
+    }
+    return false;
+  }
+
+  setStyleDisplayIfChanged(rollingNumber, 'none');
+
+  if (formattedStrings.length > 0) {
+    const primary = formattedStrings[0];
+    primary.dataset.ytExactInjected = 'true';
+    removeAttributeIfPresent(primary, 'is-empty');
+    setTextContentIfChanged(primary, `${exactText}  `);
+    for (let i = 1; i < formattedStrings.length; i++) {
+      setStyleDisplayIfChanged(formattedStrings[i], 'none');
+    }
+    return true;
+  }
+
+  return false;
+}
+
+function updateDescriptionMetrics(exactViews, exactDateTime) {
   let viewsUpdated = !exactViews;
   let dateUpdated = !exactDateTime;
 
+  // 1. 新UI（ytd-watch-info-text 内の #view-count / #date-text アニメーション数値構造）の更新
+  if (exactViews && updateRollingNumberContainer(SELECTORS.VIEW_COUNT_CONTAINER, exactViews)) {
+    viewsUpdated = true;
+  }
+  if (exactDateTime && updateRollingNumberContainer(SELECTORS.DATE_TEXT_CONTAINER, exactDateTime)) {
+    dateUpdated = true;
+  }
+  if (viewsUpdated && dateUpdated) {
+    return true;
+  }
+
+  // 2. 従来UIおよびSPA遷移後の #info 内 span 構造の更新
+  // 動画の説明文本文（ytd-text-inline-expander等）を絶対に書き換えないよう、
+  // 概要欄上部の情報ヘッダ領域（#info）の末端spanのみを対象とする
+  const spans = document.querySelectorAll(SELECTORS.DESCRIPTION_INFO_SPANS);
+  if (spans.length === 0) return viewsUpdated && dateUpdated;
+
   spans.forEach(span => {
+    // 子要素を持つラッパーspanや、説明文本文領域内のspanは絶対に書き換えない
+    if (span.children.length > 0) return;
+    if (span.closest(SELECTORS.DESCRIPTION_BODY_EXCLUDE)) return;
+
     const text = span.textContent;
-    if (exactViews && text.includes('回視聴')) {
-      if (PATTERNS.ABBREVIATED_UNIT.test(text)) {
+    const trimmed = text.trim();
+    if (!trimmed || trimmed.length > 60 || trimmed.includes('\n')) return;
+
+    if (exactViews && trimmed.includes('回視聴')) {
+      if (PATTERNS.ABBREVIATED_UNIT.test(trimmed)) {
         setTextContentIfChanged(span, exactViews);
       }
       viewsUpdated = true;
     }
+
     if (exactDateTime) {
-      if (text === exactDateTime) {
+      if (trimmed === exactDateTime) {
         dateUpdated = true;
-      } else if (text.includes('前') || text.includes('昨日') || PATTERNS.DATE_TEXT.test(text)) {
+      } else if (
+        PATTERNS.RELATIVE_DATE_TEXT.test(trimmed) ||
+        PATTERNS.DATE_TEXT.test(trimmed)
+      ) {
         setTextContentIfChanged(span, exactDateTime);
         dateUpdated = true;
       }
@@ -391,17 +709,17 @@ function updateDescriptionMetrics(exactViews, exactDateTime) {
 
 
 // ============================================================================
-// 5. エントリポイント・イベントおよびDOM監視制御（動的スコープ＆自動停止）
+// 5. エントリポイント・イベントおよびDOM監視制御
 // ============================================================================
 
 let tabsSetupTimer = null;
-let currentObservedSidebar = null;
+let currentObservedTarget = null;
 
 const TABS_OBSERVER_OPTIONS = {
   childList: true,
   subtree: true,
   attributes: true,
-  attributeFilter: ['hidden', 'collapsed'],
+  attributeFilter: ['hidden', 'collapsed', 'is-two-columns_'],
 };
 
 function scheduleTabsSetup() {
@@ -420,7 +738,7 @@ function scheduleTabsSetup() {
 function isIgnorableInnerMutation(target, related, comments) {
   if (!(target instanceof Element)) return false;
 
-  // 1. 関連動画・コメント欄内部のスクロール追加等は無視
+  // 1. 関連動画・コメント欄の内部要素のスクロール追加等は無視（直下の子追加時は再評価を許可）
   if (
     (related && target !== related && related.contains(target)) ||
     (comments && target !== comments && comments.contains(target))
@@ -428,8 +746,12 @@ function isIgnorableInnerMutation(target, related, comments) {
     return true;
   }
 
-  // 2. プレイリストのアイテムリスト(#items)内部やライブチャット内部の要素更新は無視
-  if (target.closest('#items.playlist-items, ytd-live-chat-renderer, yt-live-chat-app')) {
+  // 2. 動画プレイヤー内部・メタデータ内部・プレイリストアイテム・ライブチャット内部の細かな更新は無視
+  if (
+    target.closest(
+      '#player, ytd-player, ytd-watch-metadata, #items.playlist-items, ytd-live-chat-renderer, yt-live-chat-app'
+    )
+  ) {
     return true;
   }
 
@@ -439,10 +761,11 @@ function isIgnorableInnerMutation(target, related, comments) {
 function handleTabsMutation(mutations) {
   if (!isWatchPage()) return;
 
-  const tabsPanel = document.getElementById('yt-tabs-panel');
-  if (tabsPanel && tabsPanel.isConnected) {
-    const related = document.querySelector(SELECTORS.RELATED);
-    const comments = document.querySelector(SELECTORS.COMMENTS);
+  const watchFlexy = getWatchFlexy();
+  if (watchFlexy) {
+    const secondary = watchFlexy.querySelector(SELECTORS.SECONDARY);
+    const related = secondary && secondary.querySelector(SELECTORS.RELATED);
+    const comments = watchFlexy.querySelector(SELECTORS.COMMENTS);
     const hasRelevantChange = mutations.some(mutation => {
       const target = mutation.target;
       const elementTarget = target instanceof Element ? target : target.parentElement;
@@ -456,13 +779,13 @@ function handleTabsMutation(mutations) {
 
 const tabsObserver = new MutationObserver(handleTabsMutation);
 
-function updateTabsObserverTarget(sidebar) {
-  const target = sidebar && sidebar.isConnected ? sidebar : document.documentElement;
-  if (!target || currentObservedSidebar === target) return;
+function updateTabsObserverTarget(watchFlexy) {
+  const target = watchFlexy && watchFlexy.isConnected ? watchFlexy : document.documentElement;
+  if (!target || currentObservedTarget === target) return;
 
   tabsObserver.disconnect();
   tabsObserver.observe(target, TABS_OBSERVER_OPTIONS);
-  currentObservedSidebar = target;
+  currentObservedTarget = target;
 }
 
 // --- メトリクス用のスコープ限定Observerと完了時自動停止タイマー ---
@@ -491,6 +814,7 @@ function observeMetadataRoot(metadataRoot) {
   metadataObserver.observe(metadataRoot, {
     childList: true,
     subtree: true,
+    characterData: true,
     attributes: true,
     attributeFilter: ['aria-label', 'content'],
   });
@@ -526,17 +850,45 @@ function startMetricsSyncSession() {
   }, TIMING.METRICS_RETRY_INTERVAL_MS);
 }
 
+function handleNavigateStart() {
+  isNavigating = true;
+  if (navigationSafetyTimer !== null) {
+    window.clearTimeout(navigationSafetyTimer);
+  }
+  if (metricsRetryTimer !== null) {
+    window.clearInterval(metricsRetryTimer);
+    metricsRetryTimer = null;
+  }
+  // ページ遷移開始時に `#comments` を本来の `#below` へ戻し、YouTube側のDOM更新エラーを防ぐ
+  restoreCommentsToBelow();
+
+  // 万一遷移が中断された場合でもロックが残留しないようフェイルセーフタイマーを設定
+  navigationSafetyTimer = window.setTimeout(() => {
+    navigationSafetyTimer = null;
+    if (isNavigating) {
+      isNavigating = false;
+      scheduleTabsSetup();
+    }
+  }, 1500);
+}
+
 function handleNavigation() {
-  // ページ遷移時はサイドバー要素が差し替わる可能性があるため、一旦監視をdocument全体に戻す
-  updateTabsObserverTarget(null);
+  isNavigating = false;
+  if (navigationSafetyTimer !== null) {
+    window.clearTimeout(navigationSafetyTimer);
+    navigationSafetyTimer = null;
+  }
+  updateTabsObserverTarget(getWatchFlexy());
   scheduleTabsSetup();
   scheduleMetricsUpdate();
   startMetricsSyncSession();
 }
 
 updateTabsObserverTarget(null);
+window.addEventListener('yt-navigate-start', handleNavigateStart);
 window.addEventListener('yt-navigate-finish', handleNavigation);
 window.addEventListener('yt-page-data-updated', () => {
+  isNavigating = false;
   scheduleTabsSetup();
   scheduleMetricsUpdate();
   startMetricsSyncSession();
